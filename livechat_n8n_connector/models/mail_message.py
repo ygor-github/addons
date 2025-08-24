@@ -1,67 +1,106 @@
 # -*- coding: utf-8 -*-
-import requests
+
+import json
 import logging
-from odoo import models, api
+import requests
+import threading
+
+from odoo import api, fields, models
 
 _logger = logging.getLogger(__name__)
 
 class MailMessage(models.Model):
     _inherit = 'mail.message'
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        records = super(MailMessage, self).create(vals_list)
-        
-        # Obtenemos la URL del webhook desde los parámetros del sistema
-        config_parameter = self.env['ir.config_parameter'].sudo()
-        n8n_url = config_parameter.get_param('livechat_n8n_connector.webhook_url')
+    @api.model
+    def create(self, vals):
+        """
+        Intercepts the creation of a new message. If it's from a livechat
+        and not from the admin, it triggers a webhook.
+        """
+        message = super(MailMessage, self).create(vals)
 
-        # Si no hay URL configurada, no hacemos nada
-        if not n8n_url:
-            return records
+        # Use a separate thread to avoid blocking the main UI thread
+        if message.author_id and message.model == 'im_livechat.channel' and message.body:
+            author_name = message.author_id.name
+            if 'Admin' not in author_name and 'OdooBot' not in author_name:
+                thread = threading.Thread(target=self._trigger_n8n_webhook, args=(message,))
+                thread.daemon = True
+                thread.start()
 
-        # Partner del Administrador (OdooBot) para no responder a nuestros propios mensajes
-        admin_partner = self.env.ref('base.partner_root')
+        return message
 
-        for rec in records:
-            # Condiciones para activar el webhook:
-            # 1. Es un mensaje de un canal (mail.channel)
-            # 2. El canal es de tipo livechat
-            # 3. El autor NO es el administrador (para evitar bucles)
-            # 4. El mensaje tiene cuerpo (no es una notificación de sistema)
-            is_livechat_message = rec.model == 'mail.channel' and rec.channel_id.channel_type == 'livechat'
-            is_from_customer = rec.author_id != admin_partner
-            
-            if is_livechat_message and is_from_customer and rec.body:
-                
-                payload = {
-                    "message": rec.body,
-                    "author": rec.author_id.name if rec.author_id else "Visitante",
-                    "channel_uuid": rec.channel_id.uuid, # Usamos el UUID que es único y accesible
-                }
-                
-                _logger.info(f"LIVECHAT_N8N: Enviando a n8n: {payload}")
+    def _get_n8n_webhook_url(self):
+        """Safely retrieve the webhook URL from system parameters."""
+        return self.env['ir.config_parameter'].sudo().get_param(
+            'livechat_n8n_connector.n8n_webhook_url'
+        )
 
-                try:
-                    r = requests.post(n8n_url, json=payload, timeout=10)
-                    r.raise_for_status() # Lanza un error si la respuesta es 4xx o 5xx
+    def _trigger_n8n_webhook(self, message):
+        """
+        Sends the message to the N8N webhook and processes the response.
+        This method is designed to be run in a separate thread.
+        """
+        webhook_url = self._get_n8n_webhook_url()
+        if not webhook_url:
+            _logger.warning("N8N webhook URL is not set. Skipping webhook trigger.")
+            return
 
-                    response_data = r.json()
-                    _logger.info(f"LIVECHAT_N8N: Respuesta de n8n: {response_data}")
+        livechat_channel = self.env['im_livechat.channel'].search([
+            ('id', '=', message.res_id)
+        ], limit=1)
 
-                    if response_data.get("reply"):
-                        # Buscamos el canal por su UUID para responder en el lugar correcto
-                        target_channel = self.env['mail.channel'].search([('uuid', '=', rec.channel_id.uuid)], limit=1)
-                        if target_channel:
-                            target_channel.sudo().message_post(
-                                body=response_data["reply"],
-                                message_type="comment",
-                                subtype_xmlid="mail.mt_comment",
-                                author_id=admin_partner.id # La respuesta viene del bot/administrador
-                            )
-                except requests.exceptions.RequestException as e:
-                    _logger.error(f"LIVECHAT_N8N: Error de conexión con n8n: {e}")
-                except Exception as e:
-                    _logger.error(f"LIVECHAT_N8N: Error inesperado: {e}")
+        if not livechat_channel:
+            return
 
-        return records
+        payload = {
+            'message': message.body,
+            'channel_uuid': livechat_channel.uuid,
+        }
+
+        try:
+            _logger.info(f"Sending to N8N webhook: {payload}")
+            response = requests.post(
+                webhook_url,
+                data=json.dumps(payload),
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+
+            response_data = response.json()
+            if response_data.get('reply'):
+                self._post_bot_reply(livechat_channel, response_data['reply'])
+
+        except requests.exceptions.Timeout:
+            _logger.error("Request to N8N webhook timed out.")
+        except requests.exceptions.RequestException as e:
+            _logger.error(f"Error calling N8N webhook: {e}")
+        except json.JSONDecodeError:
+            _logger.error(f"Could not decode JSON response from N8N webhook. Response: {response.text}")
+
+    def _post_bot_reply(self, channel, reply_text):
+        """
+        Posts a message to the livechat channel as the Administrator (OdooBot).
+        """
+        # We need to run this in a new cursor because this method is executed
+        # in a separate thread.
+        with self.pool.cursor() as cr:
+            env = api.Environment(cr, self.env.uid, self.env.context)
+
+            # Find the Administrator user (OdooBot)
+            admin_user = env.ref('base.user_admin', raise_if_not_found=False)
+            if not admin_user:
+                _logger.error("Could not find Administrator user (base.user_admin).")
+                return
+
+            author_id = admin_user.partner_id.id
+
+            # Post the message on the channel
+            channel.with_env(env).message_post(
+                body=reply_text,
+                author_id=author_id,
+                message_type="comment",
+                subtype_xmlid="mail.mt_comment",
+            )
+            _logger.info(f"Posted bot reply to channel {channel.uuid}: {reply_text}")
