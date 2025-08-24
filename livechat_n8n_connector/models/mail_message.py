@@ -31,10 +31,8 @@ class MailMessage(models.Model):
         return message
 
     def _get_n8n_webhook_url(self):
-        """Safely retrieve the webhook URL from system parameters."""
-        return self.env['ir.config_parameter'].sudo().get_param(
-            'livechat_n8n_connector.n8n_webhook_url'
-        )
+        """Safely retrieve the webhook URL from the current company's settings."""
+        return self.env.company.n8n_webhook_url
 
     def _trigger_n8n_webhook(self, message):
         """
