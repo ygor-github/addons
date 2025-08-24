@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_n8n" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.livechat.n8n</field>
+        <field name="model">res.config.settings</field>
+        <!-- Heredamos de la vista que tú encontraste, esto es correcto -->
+        <field name="inherit_id" ref="website_livechat.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <!-- 
+                ### EL CAMBIO FINAL Y CORRECTO ###
+                Buscamos una etiqueta <setting> con el id 'livechat' y ponemos nuestro 
+                nuevo bloque justo después.
+            -->
+            <xpath expr="//setting[@id='livechat']" position="after">
+                <div class="mt-5"> <!-- Añadimos un margen para separarlo del elemento anterior -->
+                    <h2>Integración Livechat n8n</h2>
+                    <div class="row mt16 o_settings_container" id="n8n_livechat_settings">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_right_pane">
+                                <label for="n8n_livechat_webhook_url"/>
+                                <div class="text-muted">
+                                    URL del webhook de n8n para procesar mensajes del Livechat.
+                                </div>
+                                <div class="content-group mt8">
+                                    <field name="n8n_livechat_webhook_url" class="oe_input"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>
