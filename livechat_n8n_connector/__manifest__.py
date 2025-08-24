@@ -18,7 +18,7 @@
     'author': "Jules",
     'website': "https://github.com/jules-agent",
     'category': 'Website/Livechat',
-    'version': '1.0.0',
+    'version': '18.0.1.0.0',
     'license': 'OPL-1',
 
     # any module necessary for this one to work correctly
