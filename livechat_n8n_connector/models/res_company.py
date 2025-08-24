@@ -2,12 +2,10 @@
 
 from odoo import fields, models
 
-class ResConfigSettings(models.TransientModel):
-    _inherit = 'res.config.settings'
+class ResCompany(models.Model):
+    _inherit = 'res.company'
 
     n8n_webhook_url = fields.Char(
-        related='company_id.n8n_webhook_url',
         string='N8N Webhook URL',
-        readonly=False,
         help="The URL of the N8N webhook to send livechat messages to."
     )
